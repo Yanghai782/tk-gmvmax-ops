@@ -1,4 +1,4 @@
-﻿# Country Operating Expense Rates
+# Country Operating Expense Rates
 
 Rates sourced from TikTok Shop Seller University official pages (accessed 2026-06-27).
 Exact rates depend on product category. Values below are the default/typical ranges.

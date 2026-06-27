@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """TK GMV Max CPM threshold and break-even ROI calculator.
 
 Uses official TikTok Shop commission + transaction fee rates per country.

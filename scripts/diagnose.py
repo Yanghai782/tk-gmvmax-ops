@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """GMV Max creative data diagnosis tool.
 
 Reads a TikTok GMV Max creative data export (.xlsx or .csv) and produces
