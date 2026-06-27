@@ -1,6 +1,7 @@
 ---
 name: tk-gmvmax-ops
-description: 'TikTok Shop GMV Max advertising operations toolkit. Use when analyzing GMV Max ad performance data, diagnosing creatives, calculating CPM thresholds and break-even ROI, planning cold starts, or troubleshooting delivery issues. Supports multi-country fee configs (VN, TH, MY, SG, PH, ID). Triggered by GMV Max data exports (.xlsx .csv), questions about cold start strategy, CPM ROI formula calculations, creative performance diagnosis, or daily ad account operations.'---
+description: 'TikTok Shop GMV Max advertising operations toolkit. Use when analyzing GMV Max ad performance data, diagnosing creatives, calculating CPM thresholds and break-even ROI, planning cold starts, or troubleshooting delivery issues. Supports multi-country fee configs (VN, TH, MY, SG, PH, ID). Triggered by GMV Max data exports (.xlsx .csv), questions about cold start strategy, CPM ROI formula calculations, creative performance diagnosis, or daily ad account operations.'
+---
 
 # TK GMV Max Operations Toolkit
 
