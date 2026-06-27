@@ -69,6 +69,8 @@ def map_columns(df):
         "creative": ["素材", "creative", "创意", "創意"],
         "account": ["账号", "帳號", "account", "tiktok"],
         "currency_col": ["货币", "currency", "幣"],
+        "product_id": ["商品id", "商品 id", "product id", "商品ID", "product_id"],
+        "product_name": ["商品名称", "商品名稱", "product name", "商品名"],
         "play_2s": ["2 秒", "2s"],
         "play_6s": ["6 秒", "6s"],
         "play_25": ["25%"],
@@ -159,148 +161,179 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         if total_cost_per_order < avg_price:
             be_roi = avg_price / (avg_price - total_cost_per_order)
 
-    # Diagnostic flags
-    flags = {
-        "zero_conv": [],
-        "cpm_high": [],
-        "cpa_high": [],
-        "roi_low": [],
-        "learning": [],
-        "decay_risk": [],
-        "winners": [],
-    }
 
-    creative_id_col = cm.get("creative_id")
-    if creative_id_col is None and len(df.columns) > 0:
-        creative_id_col = df.columns[0]  # First column is always creative ID
-    for idx, row in active.iterrows():
-        try:
-            raw_id = row.get(creative_id_col, idx)
-            if isinstance(raw_id, float):
-                if raw_id == raw_id:  # not NaN
-                    creative_id = str(int(raw_id))
-                else:
-                    creative_id = str(idx)  # NaN fallback
-            else:
-                creative_id = str(raw_id) if raw_id is not None else str(idx)
-        except (ValueError, OverflowError):
-            creative_id = str(idx)
-        cost = safe_float(row[cost_col]) if cost_col else 0
-        orders = safe_int(row[orders_col]) if orders_col else 0
-        roi = safe_float(row[roi_col]) if roi_col else 0
-        cpa = safe_float(row[cpa_col]) if cpa_col else 999
-
-        # CPM from cost/impressions
-        imp = safe_int(row[imp_col]) if imp_col else 0
-        cpm = (cost / imp * 1000) if imp > 0 and cost > 0 else 0
-
-        # Days since publish
-        days = None
-        if time_col and pd.notna(row.get(time_col)):
+    if not is_product_level:    # Diagnostic flags
+        flags = {
+            "zero_conv": [],
+            "cpm_high": [],
+            "cpa_high": [],
+            "roi_low": [],
+            "learning": [],
+            "decay_risk": [],
+            "winners": [],
+        }
+    
+        creative_id_col = cm.get("creative_id")
+        if creative_id_col is None and len(df.columns) > 0:
+            creative_id_col = df.columns[0]  # First column is always creative ID
+        for idx, row in active.iterrows():
             try:
-                pub = pd.to_datetime(row[time_col])
-                days = (now - pub).days
-            except:
-                pass
-
-        # Flags
-        if orders == 0 and days is not None and days >= 3 and cost > 0:
-            flags["zero_conv"].append((idx, creative_id, cost, row.get(cm["creative"], "") if cm["creative"] else ""))
-
-        if cpm_cap and cpm > cpm_cap and cost > 5:
-            flags["cpm_high"].append((idx, creative_id, cpm, row.get(cm["creative"], "") if cm["creative"] else ""))
-
-        if target_cpa and cpa > target_cpa * 1.5 and orders >= 3:
-            flags["cpa_high"].append((idx, creative_id, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
-
-        if target_roi and roi > 0 and roi < target_roi * 0.7 and cost > 10:
-            flags["roi_low"].append((idx, creative_id, roi, row.get(cm["creative"], "") if cm["creative"] else ""))
-
-        if 0 < orders < 50 and cost > 0:
-            flags["learning"].append(idx)
-
-        if days is not None and 14 <= days <= 28 and cost > 10:
-            flags["decay_risk"].append(idx)
-
-        if roi > 3 and orders >= 5:
-            flags["winners"].append((idx, creative_id, roi, orders, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
-
-    # === A1-A5 Funnel Analysis ===
-    funnel_issues = {"A1_A2": [], "A2_A3": [], "A3_A4": []}
-    play_2s_col = cm.get("play_2s")
-    play_6s_col = cm.get("play_6s")
-    play_comp_col = cm.get("play_complete")
-    
-    for idx, row in active.iterrows():
-        raw = row.get(cm.get("creative_id"), idx)
-        if isinstance(raw, float) and raw == raw:
-            fid = str(int(raw))
-        else:
-            fid = str(raw) if raw is not None else str(idx)
-        orders = safe_int(row[orders_col]) if orders_col else 0
-        cost = safe_float(row[cost_col]) if cost_col else 0
-        if cost < 1:
-            continue
-        ctr = safe_float(row[ctr_col]) if ctr_col else 0
-        cvr = safe_float(row[cvr_col]) if cvr_col else 0
-        play_2s = safe_float(row[play_2s_col]) if play_2s_col else 0
-        play_6s = safe_float(row[play_6s_col]) if play_6s_col else 0
-        play_comp = safe_float(row[play_comp_col]) if play_comp_col else 0
-        
-        # A1->A2: hook effectiveness (2s -> 6s retention)
-        if play_2s > 0 and play_6s > 0:
-            a1a2_ratio = play_6s / play_2s if play_2s > 0 else 0
-            if a1a2_ratio < 0.3 and orders < 3:
-                funnel_issues["A1_A2"].append((creative_id, play_2s, play_6s, a1a2_ratio, row.get(cm["creative"], "")))
-        # A2->A3: click interest (CTR)
-        if ctr < 0.02 and cost > 5 and orders < 3:
-            funnel_issues["A2_A3"].append((creative_id, ctr, row.get(cm["creative"], "")))
-        # A3->A4: conversion power (CVR)
-        if cvr < 0.02 and ctr > 0.02 and cost > 10 and orders < 3:
-            funnel_issues["A3_A4"].append((creative_id, cvr, row.get(cm["creative"], "")))
-
-    # === Flash Spend Detection ===
-    flash_spend = []
-    for idx, row in active.iterrows():
-        cost = safe_float(row[cost_col]) if cost_col else 0
-        imp = safe_int(row[imp_col]) if imp_col else 0
-        orders = safe_int(row[orders_col]) if orders_col else 0
-        if imp > 0 and cost > 0:
-            cpm = (cost / imp) * 1000
-            if cpm > avg_ctr * avg_cvr * avg_price * 1000 * 1.5 and orders == 0:
-                fs_raw = row.get(cm.get("creative_id"), idx)
-                if isinstance(fs_raw, float) and fs_raw == fs_raw:
-                    fs_id = str(int(fs_raw))
+                raw_id = row.get(creative_id_col, idx)
+                if isinstance(raw_id, float):
+                    if raw_id == raw_id:  # not NaN
+                        creative_id = str(int(raw_id))
+                    else:
+                        creative_id = str(idx)  # NaN fallback
                 else:
-                    fs_id = str(fs_raw) if fs_raw is not None else str(idx)
-                flash_spend.append((fs_id, cpm, cost, row.get(cm["creative"], "")))
-
-    # === Cold Start Phase ===
-    learning_count = len(flags["learning"])
-    total_conv = sum(safe_int(row[orders_col]) for _, row in active.iterrows()) if orders_col else 0
-    if total_conv < 50:
-        phase = "探索期"
-        phase_note = "系统正在学习，ROI波动正常，勿干预"
-    elif total_conv < 200:
-        phase = "稳定期"
-        phase_note = "CPA逐步稳定，开始关注ROI"
-    else:
-        phase = "放量期"
-        phase_note = "可考虑降低出价、复制优胜素材"
+                    creative_id = str(raw_id) if raw_id is not None else str(idx)
+            except (ValueError, OverflowError):
+                creative_id = str(idx)
+            cost = safe_float(row[cost_col]) if cost_col else 0
+            orders = safe_int(row[orders_col]) if orders_col else 0
+            roi = safe_float(row[roi_col]) if roi_col else 0
+            cpa = safe_float(row[cpa_col]) if cpa_col else 999
     
-    # Decay check
-    decaying = [idx for idx in flags["decay_risk"] if idx in [w[0] for w in flags["winners"]]]
-    if decaying:
-        phase = "衰退期（优胜素材老化）"
-        phase_note = "紧急准备新素材替代"
+            # CPM from cost/impressions
+            imp = safe_int(row[imp_col]) if imp_col else 0
+            cpm = (cost / imp * 1000) if imp > 0 and cost > 0 else 0
+    
+            # Days since publish
+            days = None
+            if time_col and pd.notna(row.get(time_col)):
+                try:
+                    pub = pd.to_datetime(row[time_col])
+                    days = (now - pub).days
+                except:
+                    pass
+    
+            # Flags
+            if orders == 0 and days is not None and days >= 3 and cost > 0:
+                flags["zero_conv"].append((idx, creative_id, cost, row.get(cm["creative"], "") if cm["creative"] else ""))
+    
+            if cpm_cap and cpm > cpm_cap and cost > 5:
+                flags["cpm_high"].append((idx, creative_id, cpm, row.get(cm["creative"], "") if cm["creative"] else ""))
+    
+            if target_cpa and cpa > target_cpa * 1.5 and orders >= 3:
+                flags["cpa_high"].append((idx, creative_id, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
+    
+            if target_roi and roi > 0 and roi < target_roi * 0.7 and cost > 10:
+                flags["roi_low"].append((idx, creative_id, roi, row.get(cm["creative"], "") if cm["creative"] else ""))
+    
+            if 0 < orders < 50 and cost > 0:
+                flags["learning"].append(idx)
+    
+            if days is not None and 14 <= days <= 28 and cost > 10:
+                flags["decay_risk"].append(idx)
+    
+            if roi > 3 and orders >= 5:
+                flags["winners"].append((idx, creative_id, roi, orders, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
+    
+        # === A1-A5 Funnel Analysis ===
+        funnel_issues = {"A1_A2": [], "A2_A3": [], "A3_A4": []}
+        play_2s_col = cm.get("play_2s")
+        play_6s_col = cm.get("play_6s")
+        play_comp_col = cm.get("play_complete")
+        
+        for idx, row in active.iterrows():
+            raw = row.get(cm.get("creative_id"), idx)
+            if isinstance(raw, float) and raw == raw:
+                fid = str(int(raw))
+            else:
+                fid = str(raw) if raw is not None else str(idx)
+            orders = safe_int(row[orders_col]) if orders_col else 0
+            cost = safe_float(row[cost_col]) if cost_col else 0
+            if cost < 1:
+                continue
+            ctr = safe_float(row[ctr_col]) if ctr_col else 0
+            cvr = safe_float(row[cvr_col]) if cvr_col else 0
+            play_2s = safe_float(row[play_2s_col]) if play_2s_col else 0
+            play_6s = safe_float(row[play_6s_col]) if play_6s_col else 0
+            play_comp = safe_float(row[play_comp_col]) if play_comp_col else 0
+            
+            # A1->A2: hook effectiveness (2s -> 6s retention)
+            if play_2s > 0 and play_6s > 0:
+                a1a2_ratio = play_6s / play_2s if play_2s > 0 else 0
+                if a1a2_ratio < 0.3 and orders < 3:
+                    funnel_issues["A1_A2"].append((creative_id, play_2s, play_6s, a1a2_ratio, row.get(cm["creative"], "")))
+            # A2->A3: click interest (CTR)
+            if ctr < 0.02 and cost > 5 and orders < 3:
+                funnel_issues["A2_A3"].append((creative_id, ctr, row.get(cm["creative"], "")))
+            # A3->A4: conversion power (CVR)
+            if cvr < 0.02 and ctr > 0.02 and cost > 10 and orders < 3:
+                funnel_issues["A3_A4"].append((creative_id, cvr, row.get(cm["creative"], "")))
+    
+        # === Flash Spend Detection ===
+        flash_spend = []
+        for idx, row in active.iterrows():
+            cost = safe_float(row[cost_col]) if cost_col else 0
+            imp = safe_int(row[imp_col]) if imp_col else 0
+            orders = safe_int(row[orders_col]) if orders_col else 0
+            if imp > 0 and cost > 0:
+                cpm = (cost / imp) * 1000
+                if cpm > avg_ctr * avg_cvr * avg_price * 1000 * 1.5 and orders == 0:
+                    fs_raw = row.get(cm.get("creative_id"), idx)
+                    if isinstance(fs_raw, float) and fs_raw == fs_raw:
+                        fs_id = str(int(fs_raw))
+                    else:
+                        fs_id = str(fs_raw) if fs_raw is not None else str(idx)
+                    flash_spend.append((fs_id, cpm, cost, row.get(cm["creative"], "")))
+    
+        # === Cold Start Phase ===
+        learning_count = len(flags["learning"])
+        total_conv = sum(safe_int(row[orders_col]) for _, row in active.iterrows()) if orders_col else 0
+        if total_conv < 50:
+            phase = "探索期"
+            phase_note = "系统正在学习，ROI波动正常，勿干预"
+        elif total_conv < 200:
+            phase = "稳定期"
+            phase_note = "CPA逐步稳定，开始关注ROI"
+        else:
+            phase = "放量期"
+            phase_note = "可考虑降低出价、复制优胜素材"
+        
+        # Decay check
+        decaying = [idx for idx in flags["decay_risk"] if idx in [w[0] for w in flags["winners"]]]
+        if decaying:
+            phase = "衰退期（优胜素材老化）"
+            phase_note = "紧急准备新素材替代"
+    
+        # === GPM ===
+        gpm = avg_price * avg_ctr * avg_cvr * 1000 if avg_ctr > 0 and avg_cvr > 0 else 0
+    
+        # === Starting Bid ===
+        if target_cpa:
+            start_bid_low = target_cpa * 1.2
+            start_bid_high = target_cpa * 1.5
+    
+    
+    # === Product-Level Scenario Table ===
+    scenario_table = []
+    max_product_cost = None
+    if is_product_level and avg_price > 0:
+        fee_per_order = avg_price * fee_rate
+        base = avg_price - fee_per_order
+        if overall_roi > 0:
+            max_product_cost = base - avg_price / overall_roi
+        step = max(0.5, round(avg_price / 10, 1))
+        for pcost in np.arange(step, base, step):
+            pcost = round(pcost, 2)
+            if pcost >= base:
+                break
+            be = avg_price / (base - pcost) if base > pcost else float("inf")
+            profitable = overall_roi > be if be != float("inf") else False
+            net_margin = base - pcost
+            scenario_table.append({
+                "product_cost": pcost,
+                "be_roi": be,
+                "profitable": profitable,
+                "net_margin": net_margin,
+                "be_cpa": avg_price / be if be != float("inf") and be > 0 else 999,
+            })
 
-    # === GPM ===
-    gpm = avg_price * avg_ctr * avg_cvr * 1000 if avg_ctr > 0 and avg_cvr > 0 else 0
-
-    # === Starting Bid ===
-    if target_cpa:
-        start_bid_low = target_cpa * 1.2
-        start_bid_high = target_cpa * 1.5
+    # Product name extraction
+    product_names = []
+    if is_product_level and cm["product_name"]:
+        product_names = active[cm["product_name"]].dropna().astype(str).tolist()
 
     # Status breakdown
     status_counts = df[status_col].value_counts() if status_col else pd.Series()
@@ -337,7 +370,86 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         "df": df,
         "active": active,
         "col_info": col_info,
+        "is_product_level": is_product_level,
+        "scenario_table": scenario_table,
+        "max_product_cost": max_product_cost,
+        "product_names": product_names,
     }
+
+
+def print_product_report(r):
+    """Print report for product-level (aggregate) data."""
+    cname = COUNTRY_NAMES.get(r["country"], r["country"])
+    fee_rate = r["fee_rate"]
+    product_names = r.get("product_names", [])
+
+    print("=" * 65)
+    print(f"  GMV Max    |  {cname}")
+    print("=" * 65)
+    if product_names:
+        for pn in product_names[:3]:
+            print(f"    {pn[:55]}")
+    print(f"    :     {r['total_creatives']}")
+    print(f"    (>0):     {r['active_creatives']}")
+    print()
+    print(f"    :            ${r['total_cost']:,.2f}")
+    print(f"    :           {r['total_orders']}")
+    print(f"    :          ${r['total_revenue']:,.2f}")
+    print(f"  ROI:            {r['overall_roi']:.2f}")
+    print(f"    :        ${r['avg_price']:.2f}")
+    print(f"  CPA:           ${r['avg_cpa']:.2f}")
+    print()
+    print(f"    :           {fee_rate*100:.1f}%")
+    fee_per_order = r["avg_price"] * fee_rate
+    print(f"    :          ${fee_per_order:.2f}")
+    print(f"    :      ${r['avg_price'] - fee_per_order:.2f}")
+    print()
+
+    if r["be_roi"] is not None:
+        be_str = f"{r['be_roi']:.2f}" if r['be_roi'] != float("inf") else "INF ()"
+        print(f"  ROI:         {be_str}")
+        if r["be_roi"] != float("inf") and r["avg_price"] > 0:
+            print(f"  CPA:           ${r['avg_price']/r['be_roi']:.2f}")
+        print()
+
+    if r.get("max_product_cost") is not None and r["max_product_cost"] > 0:
+        print(f"  ROI {r['overall_roi']:.1f}:  ${r['max_product_cost']:.2f}")
+        print(f"  ()")
+        print()
+
+    scenario_table = r.get("scenario_table", [])
+    if scenario_table:
+        print("---   ---")
+        print(f"  {'':<14} {' ROI':<10} {' CPA':<10} {'':<12} {'':<10}")
+        print(f"  {'-'*14} {'-'*10} {'-'*10} {'-'*12} {'-'*10}")
+        for s in scenario_table:
+            be_str = f"{s['be_roi']:.2f}" if s['be_roi'] != float("inf") else "INF"
+            mark = "YES" if s["profitable"] else "NO"
+            print(f"  ${s['product_cost']:<13.2f} {be_str:<10} ${s['be_cpa']:<9.2f} {mark:<12} ${s['net_margin']:<9.2f}")
+        print()
+
+    print("---  ---")
+    recs = []
+    if r["overall_roi"] > 3:
+        recs.append(f"ROI {r['overall_roi']:.1f}  — ")
+    if r["avg_cpa"] < r["avg_price"] * 0.3:
+        recs.append("CPA  (<30% ) — ")
+    if r["total_orders"] >= 50:
+        recs.append(f" ({r['total_orders']} ) — ")
+    else:
+        recs.append(f" ({r['total_orders']}/50 ) —  /")
+    if r.get("max_product_cost") is not None and r["max_product_cost"] < 3:
+        recs.append(" —  ")
+    if r["be_roi"] is None:
+        recs.append(" ROI ")
+    recs.append("  (CTR/CVR) GMV Max ")
+    for i, rec in enumerate(recs, 1):
+        print(f"  {i}. {rec}")
+
+    daily = r["avg_cpa"] * 50 if r["avg_cpa"] < 999 else r["avg_price"] / 3 * 50
+    print(f"\n    : ${daily:.2f}  (~50 /)")
+
+    print("=" * 65)
 
 
 def print_report(r):
