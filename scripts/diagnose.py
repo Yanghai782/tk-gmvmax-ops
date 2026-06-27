@@ -100,7 +100,7 @@ def load_data(path):
     return pd.read_excel(path)
 
 
-def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN"):
+def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", product_cost=None, shipping=0):
     now = datetime.now()
     cm = map_columns(df)
     fee_rate = COUNTRY_FEES.get(country, 0.10)
@@ -145,8 +145,12 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN"):
     if target_cpa is None and avg_price > 0:
         target_cpa = avg_cpa * 1.2 if avg_cpa < 999 else avg_price / 3
 
-    # Break-even ROI requires product cost — use calculate.py for accurate number
+    # Break-even ROI — requires product cost
     be_roi = None
+    if product_cost is not None and avg_price > 0:
+        total_cost_per_order = product_cost + shipping + avg_price * fee_rate
+        if total_cost_per_order < avg_price:
+            be_roi = avg_price / (avg_price - total_cost_per_order)
 
     # Diagnostic flags
     flags = {
@@ -253,7 +257,9 @@ def print_report(r):
     print(f"  Country Fee Rate:       {fee_rate*100:.1f}%")
     if r["be_roi"] is not None:
         be_str = f"{r['be_roi']:.2f}" if r['be_roi'] != float("inf") else "INF (unprofitable)"
-        print(f"  Break-Even ROI (est):   {be_str}")
+        print(f"  Break-Even ROI:         {be_str}")
+    if r.get("be_roi") is not None and r["be_roi"] != float("inf") and r["avg_price"] > 0:
+        print(f"  Break-Even CPA:         ${r['avg_price']/r['be_roi']:.2f}")
     if r["cpm_cap"] is not None:
         print(f"  CPM Cap (est):          ${r['cpm_cap']:.2f}")
     print()
@@ -331,15 +337,30 @@ def print_report(r):
     for i, rec in enumerate(recs, 1):
         print(f"  {i}. {rec}")
 
+    # Quick calculator section if product cost was provided
+    if r["be_roi"] is not None:
+        print()
+        print("--- Quick CPM Reference ---")
+        print(f"  Break-Even ROI: {r['be_roi']:.2f}")
+        for mult in [1.3, 1.5, 2.0]:
+            troi = r["be_roi"] * mult
+            gpm = r["avg_price"] * r["avg_ctr"] * r["avg_cvr"] * 1000
+            cap = gpm / troi if troi > 0 else 999
+            print(f"  At {mult}x BE (ROI={troi:.1f}): CPM cap=${cap:.2f}, CPA target=${r['avg_price']/troi:.2f}")
+        daily = (r["avg_price"] / (r["be_roi"] * 1.3)) * 50 if r["be_roi"] > 0 else 0
+        print(f"  Suggested daily budget: ${daily:.2f}")
+
     print("=" * 65)
 
 
 def main():
     parser = argparse.ArgumentParser(description="GMV Max creative diagnosis")
     parser.add_argument("path", help="Path to creative data export (.xlsx or .csv)")
-    parser.add_argument("--target-roi", type=float, default=None, help="Target ROI")
+    parser.add_argument("--target-roi", type=float, default=None, help="Target ROI (default: auto from data)")
     parser.add_argument("--target-cpa", type=float, default=None, help="Target CPA ($)")
-    parser.add_argument("--cpm-cap", type=float, default=None, help="CPM cap ($)")
+    parser.add_argument("--cpm-cap", type=float, default=None, help="CPM cap ($, default: auto-calculated)")
+    parser.add_argument("--product-cost", type=float, default=None, help="Product cost per unit ($, for break-even ROI)")
+    parser.add_argument("--shipping", type=float, default=0, help="Shipping cost per order ($)")
     parser.add_argument("--country", type=str, default=None, choices=list(COUNTRY_FEES.keys()), help="Country code (auto-detect if omitted)")
     parser.add_argument("--fee-override", type=float, default=None, help="Override total fee rate (decimal)")
     parser.add_argument("--output", type=str, default=None, help="Write report to file")
@@ -352,7 +373,7 @@ def main():
     if args.fee_override:
         COUNTRY_FEES[country] = args.fee_override
 
-    r = diagnose(df, args.target_roi, args.target_cpa, args.cpm_cap, country)
+    r = diagnose(df, args.target_roi, args.target_cpa, args.cpm_cap, country, args.product_cost, args.shipping)
     r["detected_currency"] = currency
 
     if args.output:

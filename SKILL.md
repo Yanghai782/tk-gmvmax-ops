@@ -12,80 +12,62 @@ description: >-
 
 # TK GMV Max Operations Toolkit
 
-## Quick Start
+## One-Stop Diagnosis (Primary Workflow)
 
-Three workflows. Each tells you exactly what to ask the user before running.
+User provides a GMV Max creative data export (.xlsx or .csv). Everything auto-detected.
 
-## Workflow 1: Diagnose Creatives (zero-config)
+**Only ask the user for:** product cost per unit (not in ad data).
 
-User provides a GMV Max creative data export (.xlsx or .csv). Everything else is auto-detected.
-
-**No questions needed.** Run immediately:
+Then run:
 
 ```
-python scripts/diagnose.py <path-to-file>
+python scripts/diagnose.py <file> --product-cost N
 ```
 
-The script auto-detects: column names, country (from currency), fee rate, CPM cap.
-Optional flags: `--target-roi N`, `--target-cpa N`, `--cpm-cap N`, `--country VN`.
+Output includes ALL of:
+- Creative diagnosis: winners, kill list, CPM/ROI flags, learning phase status
+- Break-even ROI & CPA
+- CPM cap (auto-calculated)
+- Quick CPM reference at 1.3x/1.5x/2.0x break-even
+- Suggested daily budget
+- Actionable recommendations
 
-## Workflow 2: Calculate CPM Thresholds
+Without `--product-cost`: skips break-even/Budget, still outputs CPM cap and full diagnosis.
 
-**MUST ask the user for these before running:**
+## Cold Start Planning
 
-1. Product selling price (per order, in local currency)
-2. Product cost per unit
-3. Country code (VN/TH/MY/SG/PH/ID)
-4. Estimated CTR (e.g. 0.04 for 4%)
-5. Estimated CVR (e.g. 0.05 for 5%)
+Load `references/cold-start.md`. Ask user for: product info, country, target CPA (if known).
 
-Optional (has defaults): target ROI, target CPA, shipping cost, fee override.
+## Self-Service: Calculator (standalone)
 
-If the user provides an ad data export first, extract CTR/CVR/price from it automatically with diagnose.py, then ask only for the missing product cost.
-
-Run:
 ```
-python scripts/calculate.py --price 10.00 --cost 4.00 --country VN --ctr 0.04 --cvr 0.05
+python scripts/calculate.py --price X --cost Y --country VN --ctr 0.04 --cvr 0.05
 ```
 
-## Workflow 3: Cold Start Planning
+## What the Skill Knows vs What It Asks
 
-**MUST ask the user:**
-
-1. Product info: what are they launching?
-2. Country
-3. Estimated target CPA (if known; otherwise derive from price/data)
-
-Then load `references/cold-start.md` for the full playbook, and calculate budget + bid from the inputs.
-
-## Important: When to Ask vs When to Auto-Detect
-
-| Data Point | Source |
-|-----------|--------|
-| Price (AOV) | Auto from diagnose.py OR ask user |
-| CTR, CVR | Auto from diagnose.py OR ask user |
-| Country, Fee Rate | Auto from diagnose.py (currency column) |
-| CPM Cap | Auto-calculated from above |
-| **Product Cost** | **ALWAYS ask user** (not in ad data) |
-| **Target ROI** | **Ask user** (business decision) |
-| Target CPA | Auto-derived from price/ROI OR ask user |
-| Shipping Cost | Ask user if not zero |
+| Auto-Detected | Must Ask User |
+|--------------|---------------|
+| Country, currency, fee rate (from Excel) | **Product cost** (always) |
+| CTR, CVR, AOV, CPA, ROI (from Excel) | Target ROI (optional, has default) |
+| Column names (Chinese/English auto-map) | Shipping cost (optional) |
+| CPM cap, break-even, budget (calculated) | — |
 
 ## Core Principles
 
-- Broad to narrow audience strategy
-- Creative quality drives ECPM; one winner carries a product
-- Never pause/restart during learning phase (< 50 conversions)
-- 3 days, 0 conversions = kill the creative
-- CPM > CPM cap = losing money (use the formula)
+- Broad to narrow audience. Never narrow during cold start.
+- Creative quality drives ECPM. One winner carries a product.
+- Never pause/restart during learning (< 50 conversions).
+- 3 days, 0 conversions = kill.
+- CPM > CPM cap = losing money.
 
 ## Resources
 
-- `scripts/diagnose.py` -- Auto-detect creative diagnosis from any GMV Max export
-- `scripts/calculate.py` -- CPM threshold, break-even ROI, GPM calculator
-- `references/country-fees.md` -- Official commission + transaction fee rates by country
-- `references/formulas.md` -- Full formula derivations with examples
-- `references/cold-start.md` -- Day 1-3+ cold start playbook
-- `references/daily-checklist.md` -- Daily operations checklist + decision matrix
-- `references/troubleshooting.md` -- High CPM, flash spend, campaign creation decisions
-- `references/a1-a5.md` -- A1-A5 audience funnel and creative strategy by stage
+- `scripts/diagnose.py` — One-stop: diagnosis + break-even + CPM cap + budget
+- `scripts/calculate.py` — Standalone CPM/ROI/GPM calculator
+- `references/country-fees.md` — Official rates by country (commission + tx fee)
+- `references/formulas.md` — Full formula derivations
+- `references/cold-start.md` — Day 1-3+ playbook
+- `references/daily-checklist.md` — Daily ops + decision matrix
+- `references/troubleshooting.md` — High CPM, flash spend, new campaign rules
+- `references/a1-a5.md` — Audience funnel + creative strategy by stage
