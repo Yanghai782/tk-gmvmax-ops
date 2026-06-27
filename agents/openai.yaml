@@ -1,4 +1,4 @@
 interface:
   display_name: "TK GMV Max Ops"
-  short_description: "Diagnose creatives, calc CPM/ROI, plan cold starts"
+  short_description: "Diagnose creatives & products, calc CPM/ROI, plan cold starts"
   default_prompt: "Analyze this GMV Max data and tell me which creatives to kill, which to scale, and what to do next."
