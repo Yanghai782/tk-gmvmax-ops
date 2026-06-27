@@ -65,9 +65,16 @@ def map_columns(df):
         "cvr": ["转化率", "cvr", "conversion", "轉化率"],
         "status": ["状态", "狀態", "status"],
         "publish_time": ["发布", "發布", "publish", "time", "时间", "時間"],
+        "creative_id": ["作品", "creative id", "ID"],
         "creative": ["素材", "creative", "创意", "創意"],
         "account": ["账号", "帳號", "account", "tiktok"],
         "currency_col": ["货币", "currency", "幣"],
+        "play_2s": ["2 秒", "2s"],
+        "play_6s": ["6 秒", "6s"],
+        "play_25": ["25%"],
+        "play_50": ["50%"],
+        "play_75": ["75%"],
+        "play_complete": ["完播", "100%"],
     }
     for key, kws in keywords.items():
         for col in df.columns:
@@ -163,7 +170,21 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         "winners": [],
     }
 
+    creative_id_col = cm.get("creative_id")
+    if creative_id_col is None and len(df.columns) > 0:
+        creative_id_col = df.columns[0]  # First column is always creative ID
     for idx, row in active.iterrows():
+        try:
+            raw_id = row.get(creative_id_col, idx)
+            if isinstance(raw_id, float):
+                if raw_id == raw_id:  # not NaN
+                    creative_id = str(int(raw_id))
+                else:
+                    creative_id = str(idx)  # NaN fallback
+            else:
+                creative_id = str(raw_id) if raw_id is not None else str(idx)
+        except (ValueError, OverflowError):
+            creative_id = str(idx)
         cost = safe_float(row[cost_col]) if cost_col else 0
         orders = safe_int(row[orders_col]) if orders_col else 0
         roi = safe_float(row[roi_col]) if roi_col else 0
@@ -184,16 +205,16 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
 
         # Flags
         if orders == 0 and days is not None and days >= 3 and cost > 0:
-            flags["zero_conv"].append((idx, cost, row.get(cm["creative"], "") if cm["creative"] else ""))
+            flags["zero_conv"].append((idx, creative_id, cost, row.get(cm["creative"], "") if cm["creative"] else ""))
 
         if cpm_cap and cpm > cpm_cap and cost > 5:
-            flags["cpm_high"].append((idx, cpm, row.get(cm["creative"], "") if cm["creative"] else ""))
+            flags["cpm_high"].append((idx, creative_id, cpm, row.get(cm["creative"], "") if cm["creative"] else ""))
 
         if target_cpa and cpa > target_cpa * 1.5 and orders >= 3:
-            flags["cpa_high"].append((idx, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
+            flags["cpa_high"].append((idx, creative_id, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
 
         if target_roi and roi > 0 and roi < target_roi * 0.7 and cost > 10:
-            flags["roi_low"].append((idx, roi, row.get(cm["creative"], "") if cm["creative"] else ""))
+            flags["roi_low"].append((idx, creative_id, roi, row.get(cm["creative"], "") if cm["creative"] else ""))
 
         if 0 < orders < 50 and cost > 0:
             flags["learning"].append(idx)
@@ -202,7 +223,84 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
             flags["decay_risk"].append(idx)
 
         if roi > 3 and orders >= 5:
-            flags["winners"].append((idx, roi, orders, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
+            flags["winners"].append((idx, creative_id, roi, orders, cpa, row.get(cm["creative"], "") if cm["creative"] else ""))
+
+    # === A1-A5 Funnel Analysis ===
+    funnel_issues = {"A1_A2": [], "A2_A3": [], "A3_A4": []}
+    play_2s_col = cm.get("play_2s")
+    play_6s_col = cm.get("play_6s")
+    play_comp_col = cm.get("play_complete")
+    
+    for idx, row in active.iterrows():
+        raw = row.get(cm.get("creative_id"), idx)
+        if isinstance(raw, float) and raw == raw:
+            fid = str(int(raw))
+        else:
+            fid = str(raw) if raw is not None else str(idx)
+        orders = safe_int(row[orders_col]) if orders_col else 0
+        cost = safe_float(row[cost_col]) if cost_col else 0
+        if cost < 1:
+            continue
+        ctr = safe_float(row[ctr_col]) if ctr_col else 0
+        cvr = safe_float(row[cvr_col]) if cvr_col else 0
+        play_2s = safe_float(row[play_2s_col]) if play_2s_col else 0
+        play_6s = safe_float(row[play_6s_col]) if play_6s_col else 0
+        play_comp = safe_float(row[play_comp_col]) if play_comp_col else 0
+        
+        # A1->A2: hook effectiveness (2s -> 6s retention)
+        if play_2s > 0 and play_6s > 0:
+            a1a2_ratio = play_6s / play_2s if play_2s > 0 else 0
+            if a1a2_ratio < 0.3 and orders < 3:
+                funnel_issues["A1_A2"].append((creative_id, play_2s, play_6s, a1a2_ratio, row.get(cm["creative"], "")))
+        # A2->A3: click interest (CTR)
+        if ctr < 0.02 and cost > 5 and orders < 3:
+            funnel_issues["A2_A3"].append((creative_id, ctr, row.get(cm["creative"], "")))
+        # A3->A4: conversion power (CVR)
+        if cvr < 0.02 and ctr > 0.02 and cost > 10 and orders < 3:
+            funnel_issues["A3_A4"].append((creative_id, cvr, row.get(cm["creative"], "")))
+
+    # === Flash Spend Detection ===
+    flash_spend = []
+    for idx, row in active.iterrows():
+        cost = safe_float(row[cost_col]) if cost_col else 0
+        imp = safe_int(row[imp_col]) if imp_col else 0
+        orders = safe_int(row[orders_col]) if orders_col else 0
+        if imp > 0 and cost > 0:
+            cpm = (cost / imp) * 1000
+            if cpm > avg_ctr * avg_cvr * avg_price * 1000 * 1.5 and orders == 0:
+                fs_raw = row.get(cm.get("creative_id"), idx)
+                if isinstance(fs_raw, float) and fs_raw == fs_raw:
+                    fs_id = str(int(fs_raw))
+                else:
+                    fs_id = str(fs_raw) if fs_raw is not None else str(idx)
+                flash_spend.append((fs_id, cpm, cost, row.get(cm["creative"], "")))
+
+    # === Cold Start Phase ===
+    learning_count = len(flags["learning"])
+    total_conv = sum(safe_int(row[orders_col]) for _, row in active.iterrows()) if orders_col else 0
+    if total_conv < 50:
+        phase = "探索期"
+        phase_note = "系统正在学习，ROI波动正常，勿干预"
+    elif total_conv < 200:
+        phase = "稳定期"
+        phase_note = "CPA逐步稳定，开始关注ROI"
+    else:
+        phase = "放量期"
+        phase_note = "可考虑降低出价、复制优胜素材"
+    
+    # Decay check
+    decaying = [idx for idx in flags["decay_risk"] if idx in [w[0] for w in flags["winners"]]]
+    if decaying:
+        phase = "衰退期（优胜素材老化）"
+        phase_note = "紧急准备新素材替代"
+
+    # === GPM ===
+    gpm = avg_price * avg_ctr * avg_cvr * 1000 if avg_ctr > 0 and avg_cvr > 0 else 0
+
+    # === Starting Bid ===
+    if target_cpa:
+        start_bid_low = target_cpa * 1.2
+        start_bid_high = target_cpa * 1.5
 
     # Status breakdown
     status_counts = df[status_col].value_counts() if status_col else pd.Series()
@@ -212,6 +310,14 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
 
     return {
         "total_creatives": len(df),
+        "funnel_issues": funnel_issues,
+        "flash_spend": flash_spend,
+        "phase": phase,
+        "phase_note": phase_note,
+        "gpm": gpm,
+        "start_bid_low": start_bid_low if target_cpa else None,
+        "start_bid_high": start_bid_high if target_cpa else None,
+        "total_conv": total_conv,
         "active_creatives": len(active),
         "total_cost": total_cost,
         "total_orders": total_orders,
@@ -237,36 +343,43 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
 def print_report(r):
     cname = COUNTRY_NAMES.get(r["country"], r["country"])
     print("=" * 65)
-    print(f"  GMV Max Creative Diagnosis  |  {cname}")
+    print(f"  GMV Max 素材诊断  |  {cname}")
     print("=" * 65)
-    print(f"  Total Creatives:        {r['total_creatives']}")
-    print(f"  Active (spend > 0):     {r['active_creatives']}")
+    print(f"  素材总数:        {r['total_creatives']}")
+    print(f"  在投数:            {r['active_creatives']}")
     print()
-    print(f"  Total Spend:            ${r['total_cost']:,.2f}")
-    print(f"  Total Orders:           {r['total_orders']}")
-    print(f"  Total Revenue:          ${r['total_revenue']:,.2f}")
-    print(f"  Overall ROI:            {r['overall_roi']:.2f}")
-    print(f"  Avg Order Value:        ${r['avg_price']:.2f}")
-    print(f"  Avg CPA:                ${r['avg_cpa']:.2f}")
-    print(f"  Avg CTR:                {r['avg_ctr']*100:.2f}%")
-    print(f"  Avg CVR:                {r['avg_cvr']*100:.2f}%")
+    print(f"  总花费:            ${r['total_cost']:,.2f}")
+    print(f"  总订单:            {r['total_orders']}")
+    print(f"  总收入:            ${r['total_revenue']:,.2f}")
+    print(f"  整体ROI:          {r['overall_roi']:.2f}")
+    print(f"  平均客单价:        ${r['avg_price']:.2f}")
+    print(f"  平均CPA:         ${r['avg_cpa']:.2f}")
+    print(f"  平均CTR:         {r['avg_ctr']*100:.2f}%")
+    print(f"  平均CVR:         {r['avg_cvr']*100:.2f}%")
     print()
 
-    # Thresholds
     fee_rate = r["fee_rate"]
-    print(f"  Country Fee Rate:       {fee_rate*100:.1f}%")
+    print(f"  平台费率:         {fee_rate*100:.1f}%")
     if r["be_roi"] is not None:
-        be_str = f"{r['be_roi']:.2f}" if r['be_roi'] != float("inf") else "INF (unprofitable)"
-        print(f"  Break-Even ROI:         {be_str}")
+        be_str = f"{r['be_roi']:.2f}" if r['be_roi'] != float("inf") else "INF"
+        print(f"  盈亏平衡ROI:     {be_str}")
     if r.get("be_roi") is not None and r["be_roi"] != float("inf") and r["avg_price"] > 0:
-        print(f"  Break-Even CPA:         ${r['avg_price']/r['be_roi']:.2f}")
+        print(f"  盈亏平衡CPA:     ${r['avg_price']/r['be_roi']:.2f}")
     if r["cpm_cap"] is not None:
-        print(f"  CPM Cap (est):          ${r['cpm_cap']:.2f}")
+        print(f"  CPM上限:           ${r['cpm_cap']:.2f}")
+    if r.get("gpm", 0) > 0:
+        print(f"  GPM:               ${r['gpm']:.2f}")
+    if r.get("start_bid_low"):
+        print(f"  建议出价:          ${r['start_bid_low']:.2f} ~ ${r['start_bid_high']:.2f}")
     print()
 
-    # Status breakdown
+    # Cold start phase
+    if r.get("phase"):
+        print(f"  冷启动阶段: {r['phase']}  ({r.get('phase_note', '')})")
+        print()
+
     if len(r["status_counts"]) > 0:
-        print("--- Status Breakdown ---")
+        print("--- 状态分布 ---")
         for status, count in r["status_counts"].items():
             print(f"  {status}: {count}")
         print()
@@ -274,81 +387,112 @@ def print_report(r):
     flags = r["flags"]
 
     if flags["winners"]:
-        print(f"[WINNERS] {len(flags['winners'])} top creatives (ROI>3, 5+ orders):")
-        for _, roi_val, orders, cpa_val, creative in sorted(flags["winners"], key=lambda x: -x[1])[:5]:
-            c = str(creative)[:55]
-            print(f"  ROI={roi_val:.1f}  Orders={orders}  CPA=${cpa_val:.2f}  |  {c}")
+        print(f"[优胜] {len(flags['winners'])} 个 (ROI>3, >=5单):")
+        for _, cid, roi_val, orders, cpa_val, creative in sorted(flags["winners"], key=lambda x: -x[2]):
+            c = str(creative)[:60]
+            print(f"  {cid}  {roi_val:.1f}  {orders}单  ${cpa_val:.2f}  |  {c}")
         print()
 
     if flags["zero_conv"]:
-        print(f"[KILL] {len(flags['zero_conv'])} creatives: 3+ days, 0 conversions:")
-        for _, cost_val, creative in flags["zero_conv"][:5]:
-            c = str(creative)[:55]
-            print(f"  Spend=${cost_val:.2f}  |  {c}")
+        print(f"[淘汰] {len(flags['zero_conv'])} 个 (3天+ 零转化):")
+        for _, cid, cost_val, creative in flags["zero_conv"]:
+            c = str(creative)[:60]
+            print(f"  {cid}  ${cost_val:.2f}  |  {c}")
         print()
 
     if flags["cpm_high"]:
-        print(f"[CPM HIGH] {len(flags['cpm_high'])} creatives above CPM cap:")
-        for _, cpm_val, creative in sorted(flags["cpm_high"], key=lambda x: -x[1])[:5]:
-            c = str(creative)[:55]
-            print(f"  CPM=${cpm_val:.2f}  |  {c}")
+        print(f"[CPM超标] {len(flags['cpm_high'])} 个:")
+        for _, cid, cpm_val, creative in sorted(flags["cpm_high"], key=lambda x: -x[2]):
+            c = str(creative)[:60]
+            print(f"  {cid}  ${cpm_val:.2f}  |  {c}")
         print()
 
     if flags["cpa_high"]:
-        print(f"[CPA HIGH] {len(flags['cpa_high'])} creatives above 1.5x target:")
-        for _, cpa_val, creative in sorted(flags["cpa_high"], key=lambda x: -x[1])[:5]:
-            c = str(creative)[:55]
-            print(f"  CPA=${cpa_val:.2f}  |  {c}")
+        print(f"[CPA偏高] {len(flags['cpa_high'])} 个:")
+        for _, cid, cpa_val, creative in sorted(flags["cpa_high"], key=lambda x: -x[2]):
+            c = str(creative)[:60]
+            print(f"  {cid}  ${cpa_val:.2f}  |  {c}")
         print()
 
     if flags["roi_low"]:
-        print(f"[ROI LOW] {len(flags['roi_low'])} creatives below 70% target:")
-        for _, roi_val, creative in sorted(flags["roi_low"], key=lambda x: x[1])[:5]:
-            c = str(creative)[:55]
-            print(f"  ROI={roi_val:.2f}  |  {c}")
+        print(f"[ROI偏低] {len(flags['roi_low'])} 个:")
+        for _, cid, roi_val, creative in sorted(flags["roi_low"], key=lambda x: x[2]):
+            c = str(creative)[:60]
+            print(f"  {cid}  {roi_val:.2f}  |  {c}")
         print()
 
     if flags["learning"]:
-        print(f"[LEARNING] {len(flags['learning'])} creatives in learning (<50 conversions)")
-        print("  Do NOT touch these. Let the system learn.")
+        print(f"[学习中] {len(flags['learning'])} 个 (<50单)")
+        print("  勿动，让系统学习。")
+        print()
+
+    # A1-A5 Funnel Diagnosis
+    fi = r.get("funnel_issues", {})
+    if fi:
+        print("--- A1-A5 漏斗诊断 ---")
+        if fi.get("A1_A2"):
+            print(f"  [A1→A2 钩子弱] {len(fi['A1_A2'])} 个 (6s/2s留存率<30%):")
+            for cid, p2, p6, ratio, creative in fi["A1_A2"]:
+                c = str(creative)[:50]
+                print(f"    {cid}  2s={p2*100:.0f}%  6s={p6*100:.0f}%  留存={ratio*100:.0f}%  |  {c}")
+        if fi.get("A2_A3"):
+            print(f"  [A2→A3 点击差] {len(fi['A2_A3'])} 个 (CTR<2%):")
+            for cid, ctr_val, creative in fi["A2_A3"]:
+                c = str(creative)[:50]
+                print(f"    {cid}  CTR={ctr_val*100:.1f}%  |  {c}")
+        if fi.get("A3_A4"):
+            print(f"  [A3→A4 转化低] {len(fi['A3_A4'])} 个 (CVR<2%):")
+            for cid, cvr_val, creative in fi["A3_A4"]:
+                c = str(creative)[:50]
+                print(f"    {cid}  CVR={cvr_val*100:.1f}%  |  {c}")
+        if not any(fi.values()):
+            print("  漏斗健康，无明显断点。")
+        print()
+
+    # Flash spend
+    fs = r.get("flash_spend", [])
+    if fs:
+        print(f"[闪烧预警] {len(fs)} 个素材CPM异常高且零转化:")
+        for cid, cpm_val, cost_val, creative in fs:
+            c = str(creative)[:40]
+            print(f"  {cid}  CPM=${cpm_val:.2f}  花费=${cost_val:.2f}  |  {c}")
         print()
 
     if flags["decay_risk"]:
-        print(f"[DECAY RISK] {len(flags['decay_risk'])} creatives in 14-28 day window")
-        print("  Prepare fresh creatives before decay hits.")
+        print(f"[衰退风险] {len(flags['decay_risk'])} 个 (14-28天)")
+        print("  提前准备新素材。")
         print()
 
-    print("--- Recommendations ---")
+    print("--- 建议 ---")
     recs = []
     if flags["zero_conv"]:
-        recs.append(f"Kill {len(flags['zero_conv'])} zero-conversion creatives (3+ days)")
+        recs.append(f"淘汰 {len(flags['zero_conv'])} 个零转化素材 (3天+)")
     if flags["cpm_high"]:
-        recs.append(f"Review {len(flags['cpm_high'])} creatives above CPM cap")
+        recs.append(f"检查 {len(flags['cpm_high'])} 个 CPM超标素材")
     if flags["roi_low"]:
-        recs.append(f"Monitor {len(flags['roi_low'])} creatives with low ROI")
+        recs.append(f"关注 {len(flags['roi_low'])} 个 ROI偏低素材")
     if flags["winners"]:
-        recs.append(f"Scale: iterate on {len(flags['winners'])} top-performing creatives")
+        recs.append(f"放大: 复制 {len(flags['winners'])} 个优胜素材风格")
     if flags["decay_risk"]:
-        recs.append(f"Line up fresh creatives for {len(flags['decay_risk'])} aging assets")
+        recs.append(f"预备新素材替换 {len(flags['decay_risk'])} 个衰退素材")
     if flags["learning"]:
-        recs.append(f"Protect {len(flags['learning'])} learning creatives: no pause/restart")
+        recs.append(f"保护 {len(flags['learning'])} 个学习中素材: 勿暂停/重启")
     if not recs:
-        recs.append("Account looks healthy. Maintain daily creative pipeline.")
+        recs.append("账户健康，保持每日素材更新。")
     for i, rec in enumerate(recs, 1):
         print(f"  {i}. {rec}")
 
-    # Quick calculator section if product cost was provided
     if r["be_roi"] is not None:
         print()
-        print("--- Quick CPM Reference ---")
-        print(f"  Break-Even ROI: {r['be_roi']:.2f}")
+        print("--- CPM 参考 ---")
+        print(f"  盈亏平衡ROI: {r['be_roi']:.2f}")
         for mult in [1.3, 1.5, 2.0]:
             troi = r["be_roi"] * mult
             gpm = r["avg_price"] * r["avg_ctr"] * r["avg_cvr"] * 1000
             cap = gpm / troi if troi > 0 else 999
-            print(f"  At {mult}x BE (ROI={troi:.1f}): CPM cap=${cap:.2f}, CPA target=${r['avg_price']/troi:.2f}")
+            print(f"  {mult}x (ROI={troi:.1f}): CPM上限=${cap:.2f}, CPA目标=${r['avg_price']/troi:.2f}")
         daily = (r["avg_price"] / (r["be_roi"] * 1.3)) * 50 if r["be_roi"] > 0 else 0
-        print(f"  Suggested daily budget: ${daily:.2f}")
+        print(f"  建议日预算: ${daily:.2f}")
 
     print("=" * 65)
 
