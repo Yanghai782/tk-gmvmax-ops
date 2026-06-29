@@ -86,6 +86,13 @@ def map_columns(df):
                 break
         if key not in col_map:
             col_map[key] = None
+    if col_map.get("creative_id"):
+        cid_col = str(col_map["creative_id"]).lower()
+        if "作品" not in cid_col and "creative" not in cid_col:
+            for c in df.columns:
+                if "作品" in str(c):
+                    col_map["creative_id"] = c
+                    break
     return col_map
 
 
@@ -147,7 +154,7 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
     # Auto-calculate CPM cap if not provided
     if cpm_cap is None and avg_ctr > 0 and avg_cvr > 0 and avg_price > 0:
         gpm_auto = avg_price * avg_ctr * avg_cvr * 1000
-        auto_target_roi = target_roi if target_roi else (overall_roi * 0.8 if overall_roi > 1 else 2.0)
+        auto_target_roi = target_roi if target_roi else (overall_roi * 0.8 if overall_roi > 2 else 2.0)
         cpm_cap = gpm_auto / auto_target_roi
 
     # Auto-calculate target CPA if not provided
@@ -161,6 +168,9 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         if total_cost_per_order < avg_price:
             be_roi = avg_price / (avg_price - total_cost_per_order)
 
+
+    # Detect if product-level data (no creative IDs, aggregated by product)
+    is_product_level = not cm.get("creative_id") or df[cm["creative_id"]].isna().all()
 
     if not is_product_level:    # Diagnostic flags
         flags = {
@@ -183,7 +193,9 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
                     if raw_id == raw_id:  # not NaN
                         creative_id = str(int(raw_id))
                     else:
-                        creative_id = str(idx)  # NaN fallback
+                        # NaN - use creative type or fallback
+                        ctype = str(row.get(cm.get("creative"), "")) if cm.get("creative") else ""
+                        creative_id = ctype if ctype and ctype != "nan" else str(idx)
                 else:
                     creative_id = str(raw_id) if raw_id is not None else str(idx)
             except (ValueError, OverflowError):
@@ -236,8 +248,12 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         
         for idx, row in active.iterrows():
             raw = row.get(cm.get("creative_id"), idx)
-            if isinstance(raw, float) and raw == raw:
-                fid = str(int(raw))
+            if isinstance(raw, float):
+                if raw == raw:
+                    fid = str(int(raw))
+                else:
+                    ctype = str(row.get(cm.get("creative"), "")) if cm.get("creative") else ""
+                    fid = ctype if ctype and ctype != "nan" else str(idx)
             else:
                 fid = str(raw) if raw is not None else str(idx)
             orders = safe_int(row[orders_col]) if orders_col else 0
@@ -254,13 +270,13 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
             if play_2s > 0 and play_6s > 0:
                 a1a2_ratio = play_6s / play_2s if play_2s > 0 else 0
                 if a1a2_ratio < 0.3 and orders < 3:
-                    funnel_issues["A1_A2"].append((creative_id, play_2s, play_6s, a1a2_ratio, row.get(cm["creative"], "")))
+                    funnel_issues["A1_A2"].append((fid, play_2s, play_6s, a1a2_ratio, row.get(cm["creative"], "")))
             # A2->A3: click interest (CTR)
             if ctr < 0.02 and cost > 5 and orders < 3:
-                funnel_issues["A2_A3"].append((creative_id, ctr, row.get(cm["creative"], "")))
+                funnel_issues["A2_A3"].append((fid, ctr, row.get(cm["creative"], "")))
             # A3->A4: conversion power (CVR)
             if cvr < 0.02 and ctr > 0.02 and cost > 10 and orders < 3:
-                funnel_issues["A3_A4"].append((creative_id, cvr, row.get(cm["creative"], "")))
+                funnel_issues["A3_A4"].append((fid, cvr, row.get(cm["creative"], "")))
     
         # === Flash Spend Detection ===
         flash_spend = []
@@ -270,7 +286,7 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
             orders = safe_int(row[orders_col]) if orders_col else 0
             if imp > 0 and cost > 0:
                 cpm = (cost / imp) * 1000
-                if cpm > avg_ctr * avg_cvr * avg_price * 1000 * 1.5 and orders == 0:
+                if cpm > avg_ctr * avg_cvr * avg_price * 1000 and orders == 0:
                     fs_raw = row.get(cm.get("creative_id"), idx)
                     if isinstance(fs_raw, float) and fs_raw == fs_raw:
                         fs_id = str(int(fs_raw))
@@ -281,16 +297,29 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         # === Cold Start Phase ===
         learning_count = len(flags["learning"])
         total_conv = sum(safe_int(row[orders_col]) for _, row in active.iterrows()) if orders_col else 0
+        data_start = None
+        data_end = None
+        data_age_days = 0
+        if time_col:
+            try:
+                dates = pd.to_datetime(df[time_col], errors="coerce").dropna()
+                if len(dates) > 0:
+                    data_start = dates.min()
+                    data_end = dates.max()
+                    data_age_days = (now - data_start).days
+            except:
+                pass
+
         if total_conv < 50:
-            phase = "探索期"
-            phase_note = "系统正在学习，ROI波动正常，勿干预"
-        elif total_conv < 200:
-            phase = "稳定期"
+            if data_age_days > 30:
+                phase = "探索期（计划停滞）"
+                phase_note = f"数据跨度{data_age_days:.0f}天，仅{total_conv}单。检查出价/预算是否太低"
+            else:
+                phase = "探索期（冷启动）"
+                phase_note = "全新计划：系统正在学习，切勿干预，观察3~7天"
+        elif total_conv < 150:
+            phase = "成长期"
             phase_note = "CPA逐步稳定，开始关注ROI"
-        else:
-            phase = "放量期"
-            phase_note = "可考虑降低出价、复制优胜素材"
-        
         # Decay check
         decaying = [idx for idx in flags["decay_risk"] if idx in [w[0] for w in flags["winners"]]]
         if decaying:
@@ -336,7 +365,7 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         product_names = active[cm["product_name"]].dropna().astype(str).tolist()
 
     # Status breakdown
-    status_counts = df[status_col].value_counts() if status_col else pd.Series()
+    status_counts = df[status_col].value_counts() if status_col and status_col in df.columns else pd.Series()
 
     # Column mapping info
     col_info = {k: v for k, v in cm.items() if v is not None}
@@ -370,6 +399,9 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         "df": df,
         "active": active,
         "col_info": col_info,
+        "data_start": data_start,
+        "data_end": data_end,
+        "data_age_days": data_age_days,
         "is_product_level": is_product_level,
         "scenario_table": scenario_table,
         "max_product_cost": max_product_cost,
@@ -458,7 +490,12 @@ def print_report(r):
     print(f"  GMV Max 素材诊断  |  {cname}")
     print("=" * 65)
     print(f"  素材总数:        {r['total_creatives']}")
-    print(f"  在投数:            {r['active_creatives']}")
+    print(f"  有花费素材:            {r['active_creatives']}")
+    if r.get('data_start') and r.get('data_end'):
+        ds = r['data_start']
+        de = r['data_end']
+        span_d = (de - ds).days
+        print(f"  数据跨度:          {ds.strftime('%Y-%m-%d')} ~ {de.strftime('%Y-%m-%d')}  ({span_d}天)")
     print()
     print(f"  总花费:            ${r['total_cost']:,.2f}")
     print(f"  总订单:            {r['total_orders']}")
