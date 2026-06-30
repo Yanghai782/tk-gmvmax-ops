@@ -116,7 +116,21 @@ def load_data(path):
     return pd.read_excel(path)
 
 
-def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", product_cost=None, shipping=0):
+def _extract_filename_dates(filepath):
+    """Extract date range from GMV Max export filename."""
+    import re as _re, os as _os
+    fname = _os.path.basename(filepath or "")
+    m = _re.search(r"(\d{4}-\d{2}-\d{2})\s*-\s*(\d{4}-\d{2}-\d{2})", fname)
+    if m:
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(m.group(1), "%Y-%m-%d"), _dt.strptime(m.group(2), "%Y-%m-%d")
+        except:
+            pass
+    return None, None
+
+
+def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", product_cost=None, shipping=0, filepath=None):
     now = datetime.now()
     cm = map_columns(df)
     fee_rate = COUNTRY_FEES.get(country, 0.10)
@@ -300,7 +314,14 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
         data_start = None
         data_end = None
         data_age_days = 0
-        if time_col:
+        file_based = False
+        fn_start, fn_end = _extract_filename_dates(filepath)
+        if fn_start is not None and fn_end is not None:
+            data_start = fn_start
+            data_end = fn_end
+            data_age_days = (now - data_end).days
+            file_based = True
+        if not file_based and time_col:
             try:
                 dates = pd.to_datetime(df[time_col], errors="coerce").dropna()
                 if len(dates) > 0:
@@ -311,7 +332,9 @@ def diagnose(df, target_roi=None, target_cpa=None, cpm_cap=None, country="VN", p
                 pass
 
         if total_conv < 50:
-            if data_age_days > 30:
+            plan_age = data_age_days
+            age_src = "\u6587\u4ef6\u540d\u5bfc\u51fa\u533a\u95f4" if file_based else "\u7d20\u6750\u53d1\u5e03\u65f6\u95f4"
+            if plan_age > 30:
                 phase = "探索期（计划停滞）"
                 phase_note = f"数据跨度{data_age_days:.0f}天，仅{total_conv}单。检查出价/预算是否太低"
             else:
@@ -666,7 +689,7 @@ def main():
     if args.fee_override:
         COUNTRY_FEES[country] = args.fee_override
 
-    r = diagnose(df, args.target_roi, args.target_cpa, args.cpm_cap, country, args.product_cost, args.shipping)
+    r = diagnose(df, args.target_roi, args.target_cpa, args.cpm_cap, country, args.product_cost, args.shipping, filepath=args.path)
     r["detected_currency"] = currency
 
     if args.output:
